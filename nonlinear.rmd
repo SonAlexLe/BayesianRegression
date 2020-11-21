@@ -19,7 +19,7 @@ options(mc.cores = parallel::detectCores())
 library(bayesplot)
 library("loo")
 library(rprojroot)
-root<-has_file("project.rmd")$make_fix_file()
+root<-has_file("nonlinear.rmd")$make_fix_file()
 ```
 
 Data loading

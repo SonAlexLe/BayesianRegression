@@ -16,111 +16,60 @@ knitr::opts_chunk$set(echo = TRUE)
 library(rstan)
 rstan_options(auto_write = TRUE)
 options(mc.cores = parallel::detectCores())
+library(brms)
 library(bayesplot)
 library("loo")
+library(GGally)
 library(rprojroot)
-root<-has_file("project.rmd")$make_fix_file()
+library(viridis)
+root<-has_file("exploratory.rmd")$make_fix_file()
 ```
 
 Data loading
 
-```{r}
-data <- read.csv("data/airfoil_self_noise.csv", sep=";")
-print(data[1:5,])
+```{r load_data}
+airfoil <- read.csv("data/airfoil_self_noise.csv", sep=";")
+colnames(airfoil) <- c("FR", "AOA", "CL", "FSV", "SSDT", "SSPL")
+sample <- caTools::sample.split(airfoil, SplitRatio = 0.75)
+train <- subset(airfoil, sample == TRUE)
+test <- subset(airfoil, sample == FALSE)
+print(airfoil[1:5,])
 ```
 
-## Model 1)
+Exploratory data visualization
 
-```{r}
-model_code_1 = root("models/model1.stan")
-writeLines(readLines(model_code_1))
-```
+```{r pairs}
+pairs <- ggpairs(airfoil)
+pairs
 
-```{r}
-dat <- list(n = length(data[[1]]),
-            k = 5,
-            X = subset(data, select=-scaled_sound_pressure_level),
-            Y = data$scaled_sound_pressure_level
-            )
+gridExtra::grid.arrange(pairs[6,1], pairs[6,2], pairs[6,3],
+                        pairs[6,4], pairs[6,5], pairs[6,6], nrow=2,
+                        top="Pairs plot of response variable against all other variables")
 
-fit_1 <- stan(file = model_code_1, data = dat, refresh = 0) 
-```
+ggparcoord(airfoil[sample(order(airfoil),500),],
+           title = "Parallel coordinate plot",
+           scale="center") +
+  scale_color_viridis(discrete = T) +
+  theme_minimal() +
+  theme(
+    legend.position="none",
+    plot.title = element_text(size=20)
+  )
 
-Rhat check
+reorder_cormat <- function(data) {
+  cormat <- cor(data)
+  # Use correlation between variables as distance
+  dd <- as.dist((1-cormat)/2)
+  hc <- hclust(dd)
+  cormat <-cormat[hc$order, hc$order]
+}
 
-```{r}
-print(fit_1, pars = c("alpha","beta","sigma"))
-```
-
-Convergence visual check
-
-```{r}
-traceplot(fit_1, pars = c("alpha","beta","sigma"), inc_warmup = FALSE,  nrow = 4)
-```
-
-```{r}
-stan_diag(fit_1)
-```
-
-Loo check
-
-```{r}
-log_lik_1 <- extract_log_lik(fit_1, merge_chains = FALSE)
-r_eff_1 <- relative_eff(exp(log_lik_1)) 
-loo_1 <- loo(log_lik_1, r_eff = r_eff_1)
-print(loo_1$estimates)
-pareto_k_table(loo_1)
-```
-In here, the effective number of parameters is 8
-
-## Model 2)
-
-The same code as Model 1 but with different priors
-
-```{r}
-model_code_2 = root("models/model2.stan")
-writeLines(readLines(model_code_2))
-```
-
-```{r}
-dat <- list(n = length(data[[1]]),
-            k = 5,
-            X = subset(data, select=-scaled_sound_pressure_level),
-            Y = data$scaled_sound_pressure_level
-            )
-
-fit_2 <- stan(file = model_code_2, data = dat, refresh = 0) 
-```
-
-Rhat check
-
-```{r}
-print(fit_2, pars = c("alpha","beta","sigma"))
-```
-
-Convergence visual check
-
-```{r}
-traceplot(fit_2, pars = c("alpha","beta","sigma"), inc_warmup = FALSE,  nrow = 4)
-```
-
-```{r}
-stan_diag(fit_2)
-```
-
-Loo check
-
-```{r}
-log_lik_2 <- extract_log_lik(fit_2, merge_chains = FALSE)
-r_eff_2 <- relative_eff(exp(log_lik_2)) 
-loo_2 <- loo(log_lik_2, r_eff = r_eff_2)
-print(loo_2$estimates)
-pareto_k_table(loo_2)
-```
-
-## Model comparision)
-
-```{r}
-comp <- loo_compare(loo_1, loo_2)
-print(comp)
+ggplot(data = reshape2::melt(reorder_cormat(airfoil)), aes(x=Var1, y=Var2, fill=value)) +
+  geom_tile(color="white") +
+  xlab("") + ylab("") +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+   midpoint = 0, limit = c(-1,1), space = "Lab", 
+    name="Pearson\nCorrelation") +
+  theme_minimal()+
+  labs(title="Correlation heatmap")
 ```
