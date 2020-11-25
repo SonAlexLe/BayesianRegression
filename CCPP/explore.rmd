@@ -14,6 +14,8 @@ editor_options:
 knitr::opts_chunk$set(echo = TRUE)
 # loading packages
 library(brms)
+library(tidyverse)
+library(caTools) # for train-test split
 library(readxl) # from tidyverse package
 library(rstan)
 rstan_options(auto_write = TRUE)
@@ -27,23 +29,34 @@ root<-has_file("explore.rmd")$make_fix_file()
 
 Data loading
 
-```{r}
+```{r data_loading}
 powerplant <- read_excel("Folds5x2_pp.xlsx")
 powerplant <- as.data.frame(scale(powerplant))
 head(powerplant)
 corrplot(cor(powerplant), method="number")
 ```
 
+```{r train_test_split}
+# not yet used in fitting models
+sample <- sample.split(powerplant$PE, SplitRatio = .75)
+powerplant.train <- subset(powerplant, sample == T)
+powerplant.test <- subset(powerplant, sample == F)
+```
+
 Model fitting
 
-```{r}
-fit1 <- brm(bf(PE ~ .), powerplant) # bf is formula (PE ~ AT + AP + P + RH), dot means every other param
-fit1 <- add_criterion(fit1, "loo")
+```{r model_fitting}
+# bf() is formula (PE ~ AT + AP + P + RH), dot means every other param
+fit1 <- add_criterion(brm(bf(PE ~ .), powerplant), "loo")
+fit4 <- add_criterion(brm(bf(PE ~ AT), powerplant), "loo")
+fit5 <- add_criterion(brm(bf(PE ~ ., decomp = "QR"), powerplant), "loo")
 # DONT RUN THE TWO FITS BELOW, takes a very long time
 fit2 <- brm(bf(PE ~ s(AT)), powerplant)
 fit2 <- add_criterion(fit2, "loo")
 fit3 <- brm(bf(PE ~ s(AT) + s(V)), powerplant, cores=4)
 fit3 <- add_criterion(fit3, "loo")
+# QR decomposition removes correlation between predictors
+# https://avehtari.github.io/modelselection/collinear.html
 ```
 
 The Stan code
@@ -51,6 +64,9 @@ The Stan code
 ```{r}
 code_brm_linear <- stancode(fit1)
 data_brm_linear <- standata(fit1)
+# Alternatively
+make_stancode(bf(PE ~ ., decomp="QR"), powerplant)
+make_standata(bf(PE ~ ., decomp="QR"), powerplant)
 ```
 
 Model evaluation
@@ -62,8 +78,19 @@ pp_check(fit3)
 loo(fit1)
 loo(fit2)
 loo(fit3)
-loo_compare(fit1, fit2, fit3)
+loo_compare(fit1, fit3, fit5)
 plot(conditional_effects(fit1), points = TRUE)
 plot(conditional_effects(fit2), points = TRUE)
 plot(conditional_effects(fit3), points = TRUE)
+plot(conditional_effects(fit4), points = TRUE)
+mcmc_neff(neff_ratio(fit1)) + yaxis_text(hjust = 0)
+mcmc_neff(neff_ratio(fit5)) + yaxis_text(hjust = 0)
+```
+
+
+```{r}
+fit5.yhat <- fitted(fit5, newdata=powerplant.train) # should probably refit with train data only
+fit5.ypred <- predict(fit5, newdata=powerplant.test) # train-test split?
+rmse <- function(y, ypred) sqrt(mean((y - ypred)^2))
+rmse(powerplant.test$PE, fit5.ypred[,"Estimate"])
 ```
