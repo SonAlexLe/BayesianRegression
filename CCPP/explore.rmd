@@ -31,7 +31,7 @@ Data loading
 
 ```{r data_loading}
 powerplant <- read_excel("Folds5x2_pp.xlsx")
-powerplant <- as.data.frame(scale(powerplant))
+powerplant.scaled <- as.data.frame(scale(powerplant))
 head(powerplant)
 corrplot(cor(powerplant), method="number")
 ```
@@ -50,6 +50,13 @@ Model fitting
 fit1 <- add_criterion(brm(bf(PE ~ .), powerplant), "loo")
 fit4 <- add_criterion(brm(bf(PE ~ AT), powerplant), "loo")
 fit5 <- add_criterion(brm(bf(PE ~ ., decomp = "QR"), powerplant), "loo")
+fit6.prior <- prior(normal(0, 300), nlpar = "b0") +
+  prior(normal(0, 100), nlpar = "b1") +
+  prior(normal(0, 100), nlpar = "b2") +
+  prior(normal(0, 100), nlpar = "b3")
+fit6 <- add_criterion(brm(bf(PE ~ b0+b1*V+b2*V^2+b3*V^3,
+                             b0 + b1 + b2 + b3 ~ 1,
+                             decomp = "QR", nl=T), data=powerplant, prior=fit6.prior), "loo")
 # DONT RUN THE TWO FITS BELOW, takes a very long time
 fit2 <- brm(bf(PE ~ s(AT)), powerplant)
 fit2 <- add_criterion(fit2, "loo")
@@ -75,6 +82,7 @@ Model evaluation
 pp_check(fit1)
 pp_check(fit2)
 pp_check(fit3)
+post_samples <- posterior_samples(fit5)
 loo(fit1)
 loo(fit2)
 loo(fit3)
@@ -83,14 +91,14 @@ plot(conditional_effects(fit1), points = TRUE)
 plot(conditional_effects(fit2), points = TRUE)
 plot(conditional_effects(fit3), points = TRUE)
 plot(conditional_effects(fit4), points = TRUE)
-mcmc_neff(neff_ratio(fit1)) + yaxis_text(hjust = 0)
+mcmc_neff(neff_ratio(fit1)) + yaxis_text(hjust = 0) # from bayesplot package
 mcmc_neff(neff_ratio(fit5)) + yaxis_text(hjust = 0)
 ```
 
 
 ```{r}
 fit5.yhat <- fitted(fit5, newdata=powerplant.train) # should probably refit with train data only
-fit5.ypred <- predict(fit5, newdata=powerplant.test) # train-test split?
+fit5.ypred <- predict(fit5, newdata=powerplant.test) # should train-test split?
 rmse <- function(y, ypred) sqrt(mean((y - ypred)^2))
 rmse(powerplant.test$PE, fit5.ypred[,"Estimate"])
 ```
