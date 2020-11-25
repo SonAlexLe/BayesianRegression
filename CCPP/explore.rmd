@@ -13,7 +13,7 @@ editor_options:
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 # loading packages
-library(rstanarm)
+library(brms)
 library(readxl) # from tidyverse package
 library(rstan)
 rstan_options(auto_write = TRUE)
@@ -21,9 +21,8 @@ options(mc.cores = parallel::detectCores())
 library(bayesplot)
 theme_set(bayesplot::theme_default())
 library(rprojroot)
-library(rvest)
 library(corrplot)
-root<-has_file("linear.rmd")$make_fix_file()
+root<-has_file("explore.rmd")$make_fix_file()
 ```
 
 Data loading
@@ -35,30 +34,36 @@ head(powerplant)
 corrplot(cor(powerplant), method="number")
 ```
 
-
-```{r}
-# this chunk requires rvest package
-wiki_url <- read_html("http://wiki.stat.ucla.edu/socr/index.php/SOCR_Data_2011_US_JobsRanking")
-html_nodes(wiki_url, "#content")
-pd_data <- html_table(html_nodes(wiki_url,"table")[[2]])
-head(pd_data)
-job_scores <- subset(pd_data, select = -c(Index, Job_Title, Description))
-corrplot(cor(job_scores), method="number")
-```
-
 Model fitting
 
 ```{r}
-fit_pp <- stan_glm(PE ~ ., data=powerplant, refresh=0)
-fit_jobs <- stan_glm(Overall_Score ~ ., data=job_scores, refresh=0)
-draws <- as.data.frame(fit_jobs)
+fit1 <- brm(bf(PE ~ .), powerplant) # bf is formula (PE ~ AT + AP + P + RH), dot means every other param
+fit1 <- add_criterion(fit1, "loo")
+# DONT RUN THE TWO FITS BELOW, takes a very long time
+fit2 <- brm(bf(PE ~ s(AT)), powerplant)
+fit2 <- add_criterion(fit2, "loo")
+fit3 <- brm(bf(PE ~ s(AT) + s(V)), powerplant, cores=4)
+fit3 <- add_criterion(fit3, "loo")
+```
+
+The Stan code
+
+```{r}
+code_brm_linear <- stancode(fit1)
+data_brm_linear <- standata(fit1)
 ```
 
 Model evaluation
 
 ```{r}
-monitor(fit_pp$stanfit)
-monitor(fit_jobs$stanfit)
-loo(fit_pp)
-loo(fit_jobs)
+pp_check(fit1)
+pp_check(fit2)
+pp_check(fit3)
+loo(fit1)
+loo(fit2)
+loo(fit3)
+loo_compare(fit1, fit2, fit3)
+plot(conditional_effects(fit1), points = TRUE)
+plot(conditional_effects(fit2), points = TRUE)
+plot(conditional_effects(fit3), points = TRUE)
 ```
