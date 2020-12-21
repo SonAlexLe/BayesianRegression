@@ -1,0 +1,688 @@
+---
+title: "Bayesian regression for predicting combined cycle power plant output"
+author:
+  - Khang Nguyen, khang.nguyen@aalto.fi
+  - Son Le, son.le@aalto.fi
+output:
+  beamer_presentation:
+    slide_level: 2
+    toc: true
+    theme: CambridgeUS
+    colortheme: default
+    latex_engine: pdflatex
+  ioslides_presentation: default
+  slidy_presentation: default
+header-includes:
+- \usepackage{booktabs}
+- \AtBeginSection[]{\begin{frame}\tableofcontents[currentsection]\end{frame}}
+- \AtBeginDocument{\title[CCPP output prediction]{Bayesian regression for predicting
+  combined cycle power plant output}}
+- \AtBeginDocument{\author[Khang Nguyen, Son Le]{Khang Nguyen, khang.nguyen@aalto.fi \and Son Le, son.le@aalto.fi}}
+# - \setbeameroption{show notes on second screen=right}
+editor_options:
+  chunk_output_type: console
+always_allow_html: yes
+---
+
+# Overview
+
+## Introduction
+
+```{r setup, include=F}
+knitr::opts_chunk$set(echo=FALSE, fig.height=6)
+library(tidyverse)
+library(brms)
+library(kableExtra)
+library(readxl)
+library(bayesplot)
+library(ggplot2)
+theme_set(brms::theme_default(base_family="sans", base_size=24))
+color_scheme_set("brightblue")
+dat <- read_excel("data/Folds5x2_pp.xlsx")
+train <- read_csv("data/train.csv")
+test <- read_csv("data/test.csv")
+```
+
+```{r custom fuctions, include=F}
+pp_rmse <- function(fit, newdata, ytrue=newdata$PE) {
+  yrep <- posterior_epred(fit, newdata=newdata)
+  rmse <- function(y) sqrt(mean((y - ytrue)^2))
+  rmses <- as.data.frame(apply(yrep, MARGIN=1, rmse))
+  colnames(rmses) <- "RMSEs"
+  # Estimate is the mean
+  knitr::kable(posterior_summary(rmses), digits=3, booktabs=T) %>% kable_styling(position = "center")
+}
+
+bayes_r2 <- function(fit, newdata) {
+  r2s <- bayes_R2(fit, newdata=test, summary=F)
+  # Estimate is the mean
+  knitr::kable(posterior_summary(r2s), digits=5, booktabs=T) %>% kable_styling(position = "center")
+}
+```
+
+* Thermodynamic systems are hard to construct and solve
+* Combined cycle power plants (CCPPs) are examples
+* Predict electrical output of CCPPs to maximize profit
+* Past attempts: mathematical nonlinear equations, machine learning models
+* Answer this problem with Bayesian approach
+
+::: notes
+To be able to predict the output of thermodynamic systems has always to an goal to maximize profit from power business. There have been many attempts to model these system using nonlinear equation or machine learning models. There are downsizes to both methods
+
+For our project, we try to apply the Bayesian approach to this problem
+:::
+
+## Data description
+
+:::::::::::::: {.columns}
+::: {.column}
+* Taken from the University of California Irvine Machine Learning Repository
+
+* $`r nrow(dat)`$ x $`r ncol(dat)`$ dataset, with AT (ambient temperature), V (exhaust vacuum), AP (atmospheric pressure), RH (relative humidity), and PE (full-load electrical output)
+:::
+::: {.column}
+```{r}
+knitr::kable(train[1:5,], digits=1, booktabs=T) %>% kable_styling(font_size=9, position="center")
+```
+:::
+::::::::::::::
+
+## Data description
+
+```{r, cache=T}
+corrplot::corrplot(cor(dat), method="number")
+```
+
+::: notes
+The response variable PE has strong negative correlations with the explanatory variables AT and V. In contrast, there is a positive correlation between AT and V. In general, we would expect that the higher AT and/or V are, the lower PE is.
+:::
+
+## Data description
+
+```{r ggpairs, message=F, dev="png"}
+pairs <- GGally::ggpairs(dat)
+g1 <- ggplotGrob(pairs[5,1])
+g2 <- ggplotGrob(pairs[5,2]+theme(axis.title.y=element_blank(),
+                                  axis.text.y=element_blank()))
+g3 <- ggplotGrob(pairs[5,3])
+g4 <- ggplotGrob(pairs[5,4]+theme(axis.title.y=element_blank(),
+                                  axis.text.y=element_blank()))
+grid::grid.newpage()
+grid::grid.draw(rbind(cbind(g1, g2), cbind(g3, g4)))
+```
+
+## Data analysis problem
+
+* Fit regression models to predict the dependent variable by using independent variables
+* Full-load electrical power output PE is predicted by the ambient temperature AT, the atmospheric pressure AP, the relative humidity RH, and the exhaust vacuum V
+* Created two models to solve this problem: linear model and generalized additive model (GAM)
+
+# Linear model
+
+## Model description
+
+* Implemented as the baseline for this analysis
+
+* Has the form
+
+$$
+\begin{aligned}
+y_i &= \mathbf{x_i}^T\mathbf{w}+\epsilon_i,\quad i=1,\dots,n\\
+\epsilon_i&\sim N(0,\sigma)
+\end{aligned}
+$$
+
+* Chosen priors
+
+$$
+\begin{aligned}
+\mathbf{w}&\sim N(0,5)\\
+\text{Intercept}&\sim N(450,50)\\
+\sigma&\sim \text{exponential}(0.05)
+\end{aligned}
+$$
+
+::: notes
+yi is the dependent variable, xi is a column vector of independent variables, n is the number of data points, w is a vector of regression coefficients (weights), and ei is an error term
+
+When using stan, we need to set 3 different priors, besides one for coefficients, we also need one for the intercept term and 1 for sigma. For the intercept term, the prior was chosen based on the range of the dependent variable PE which is from 420 to 495 (which is taken from the contributor of the dataset). The other two priors are weakly informative priors. For coefficients w, the prior was chosen based on the trends of the independent variables.  As for the sigma, the exponential prior was chosen because it can minimize the error based on previous runs. It corresponds nicely to the data as the range of exponential(0.05)-distributed values is not too wide or too narrow for the data
+:::
+
+## Convergence diagnostics
+
+* Model built with `brms` and inference run with Stan
+
+* No iteration exceededs maximum tree depth of 10
+
+* Other HMC-specific convergence diagnostics were good
+
+* $\hat{R}$-values were approximately 1
+
+* $n_{\text{eff}}/N$ ratios were good
+
+```{r}
+linear <- brm(bf(PE ~ AT + V + AP + RH), file="models/linear2")
+```
+
+::: notes
+The model was run with most of the default values from stan.fit such as chains = 4, iter = 2000, warmup = 1000
+
+neff/n = the number of effective sample size divided by the total number of sample. The larger the ratio, the better. If this ratio is near 0.1, this is bad. For this model, all parameters with the exception of the intercept term has a good ratio
+
+"prior_" terms are terms from sample_prior=T
+:::
+
+## Posterior predictive checks
+
+* How well do the models describe the data?
+
+* Simulate the data used for posterior predictive checks by sampling from the posterior predictive distribution:
+
+$$
+p(\widetilde{y} \,|\, y) = \int
+p(\widetilde{y} \,|\, \theta) \, p(\theta \,|\, y) \, d\theta
+$$
+
+## Posterior predictive checks - kernel density estimates
+
+```{r, cache=T}
+pdens1 <- pp_check(linear, type="dens_overlay", nsamples = 100)
+pdens1
+```
+ 
+## Posterior predictive checks - error scatter plot
+
+```{r, cache=T, dev="png"}
+pp_check(linear, type = "error_scatter_avg", nsamples = 100)
+```
+
+## Sensitivity analysis
+
+* 2 alternative set of priors were tested
+
+* Uses only weakly informative priors, including the $\text{Intercept}$:
+
+$$
+\text{Intercept} \sim studentT(3,0,1)
+$$
+
+* Different set of priors with domain knowledge for $\text{Intercept}$:
+
+$$
+\text{Intercept} \sim N(450,50)
+$$
+
+* Conclusion: priors built from domain knowledge perform better.
+
+# Generalized additive model (GAM)
+
+## Model description
+
+* Captures nonlinear relationships through linear combination of smooth functions of explanatory variables
+
+  + A smooth function has a linear basis expansion in some chosen basis
+
+  + Splines are piecewise polynomials
+  
+  + Knots connect the pieces
+  
+  + Thin plate spline basis for smooth functions - avoids knot selection
+
+* Formula:
+
+$$
+\begin{aligned}
+\mu&=\text{Intercept}+s(x_1)+s(x_2)+s(x_3)+s(x_4)\\
+y&\sim N(\mu, \sigma)
+\end{aligned}
+$$
+
+  + Each smooth term $s(x_i)$ has 2 parts: fixed effect and random effect
+  
+## Prior
+
+* Standard deviation of each smooth term:
+$$
+\sigma_i \sim \text{exponential}(0.1),\quad i=1,\dots,4
+$$
+
+* Fixed effects:
+$$
+\beta_i\sim N(0,100),\quad i=1,\dots,4
+$$
+
+* Standard deviation of errors:
+$$
+\sigma\sim\text{exponential}(0.05)
+$$
+
+* Intercept:
+$$
+\text{Intercept}\sim N(460, 75)
+$$
+
+## Convergence diagnostics
+
+```{r}
+gam <- brm(bf(PE ~ s(AT) + s(V) + s(AP) + s(RH)), data=train, file="models/nonlinear")
+```
+
+* Model built with `brms` and inference run with Stan
+
+* 3 iterations exceeded maximum tree depth of 10
+
+* Other HMC-specific convergence diagnostics were good
+
+* $\hat{R}$-values were approximately 1
+
+* $n_{\text{eff}}/N$ ratios were good
+
+## Posterior predictive checks - kernel density estimates
+
+```{r, cache=T}
+pdens2 <- pp_check(gam, type = "dens_overlay", nsamples = 100)
+pdens2
+```
+
+## Posterior predictive checks - error scatter plot
+
+```{r, cache=T, dev="png"}
+pp_check(gam, type = "error_scatter_avg", nsamples = 100)
+```
+
+## Sensitivity analysis
+
+* Two extra set of priors were tested
+
+* Wider prior for standard deviations $\sigma_i$ of smooth terms:
+
+$$
+\sigma_i \sim \text{exponential}(0.001),\quad i=1,\dots,4
+$$
+
+* Narrower priors for $\sigma_i$ and fixed effects:
+
+$$
+\begin{aligned}
+\sigma_i&\sim \text{exponential}(1),\quad &i=1,\dots,4\\
+\beta_i&\sim N(0,1),\quad &i=1,\dots,4
+\end{aligned}
+$$
+
+* Conclusion: priors for those parameters should not be too wide or too narrow.
+
+# Model comparison
+
+## Kernel density estimates
+
+```{r}
+gt1 <- ggplotGrob(pdens1+ggtitle(label="Linear model")+theme(legend.position="none"))
+gt2 <- ggplotGrob(pdens2+ggtitle(label="GAM"))
+newWidth <- grid::unit.pmax(gt1$widths[2:3], gt2$widths[2:3])
+gt1$widths[2:3] <- as.list(newWidth)
+gt2$widths[2:3] <- as.list(newWidth)
+gridExtra::grid.arrange(gt1, gt2, ncol=2)
+```
+
+## Leave-one-out cross-validation comparison
+
+* The difference in ELPD estimates of linear model and GAM:
+
+```{r}
+cmp <- loo_compare(loo(linear), loo(gam))
+knitr::kable(cmp[,1:5], digits=1, booktabs=T) %>% kable_styling(position = "center")
+```
+
+$\Rightarrow$ GAM is better.
+
+::: notes
+GAM was the better model because it captured the seemingly nonlinear relationship between the dependent variable and the independent variables better than did the linear model. It also has the satisfactory fit of the kernel density estimates replicated data against the observed density
+
+In addition, the PSIS-LOO estimate for the GAM was higher than that for the linear model, meaning that the GAM could be more accurate in predictive power than the liner model.
+:::
+
+## Predictive performance - RMSE
+
+* Linear model:
+
+```{r}
+pp_rmse(linear, test)
+```
+
+* GAM:
+
+```{r}
+pp_rmse(gam, test)
+```
+
+## Predictive performance - Bayesian R2
+
+* Linear model:
+
+```{r}
+bayes_r2(linear, test)
+```
+
+* GAM:
+
+```{r}
+bayes_r2(gam, test)
+```
+
+# Conclusion
+
+## Conclusion
+
+* Predict the full-load electrical output of a combined cycle power plant with conditions of the plant
+* 2 Bayesian models with our prior belief
+* GAM perform significantly better than linear model (ELPD, RMSE, Bayesian R2, and posterior predictive density checking)
+* Possible improvements: variable selection and hierarchical model with groups created by an external clustering method
+
+::: notes
+We conclude that in a Bayesian regression context, simple linear models such as the one we fitted are
+rarely useful unless one knows that the true relationship between the explanatory variables and the response
+variable is a linear one. In addition, a GAM could be a decent solution to common regression tasks since
+it can capture common nonlinear relationships pretty well, especially when one does not know the true
+relationship.
+
+external clustering method: hierarchical or kmeans clustering. The hierarchical model didnt converge: large Rhat warnings, maximum_treedepth saturation warnings, and divergent transitions.
+:::
+
+# Appendix
+
+## Variable conversion
+
+```{r, echo=T, eval=F}
+dat_modified <-
+  dat %>% mutate(
+    V = V*10, # from cmHg to mmHg
+    RH = RH*10, # from percent to per-mille (‰)
+    AT = AT %>% conv_unit("C", "K") # from Celsius to Kelvin
+  )
+```
+
+## Linear model - Stan code
+
+\footnotesize
+
+```{c, echo=T, eval=F}
+// generated with brms 2.14.4
+functions {
+}
+data {
+  int<lower=1> N;  // total number of observations
+  vector[N] Y;  // response variable
+  int<lower=1> K;  // number of population-level effects
+  matrix[N, K] X;  // population-level design matrix
+  int prior_only;  // should the likelihood be ignored?
+}
+transformed data {
+  int Kc = K - 1;
+  matrix[N, Kc] Xc;  // centered version of X without an intercept
+  vector[Kc] means_X;  // column means of X before centering
+  for (i in 2:K) {
+    means_X[i - 1] = mean(X[, i]);
+    Xc[, i - 1] = X[, i] - means_X[i - 1];
+  }
+}
+```
+
+## Linear model - Stan code
+
+\footnotesize
+
+```{c, echo=T, eval=F}
+parameters {
+  vector[Kc] b;  // population-level effects
+  real Intercept;  // temporary intercept for centered predictors
+  real<lower=0> sigma;  // residual SD
+}
+transformed parameters {
+}
+model {
+  // likelihood including all constants
+  if (!prior_only) {
+    target += normal_id_glm_lpdf(Y | Xc, Intercept, b, sigma);
+  }
+  // priors including all constants
+  target += normal_lpdf(b | 0, 5);
+  target += normal_lpdf(Intercept | 450, 50);
+  target += exponential_lpdf(sigma | 0.05)
+}
+```
+
+## Linear model - Stan code
+
+```{c, echo=T, eval=F}
+generated quantities {
+  // actual population-level intercept
+  real b_Intercept = Intercept - dot_product(means_X, b);
+  // additionally draw samples from priors
+  real prior_b = normal_rng(0,5);
+  real prior_Intercept = normal_rng(450,50);
+  real prior_sigma = exponential_rng(0.05);
+  // use rejection sampling for truncated priors
+  while (prior_sigma < 0) {
+    prior_sigma = exponential_rng(0.05);
+  }
+```
+
+## Linear model - Convergence diagnostics
+
+\tiny
+
+```{r}
+summary(linear)
+```
+
+## Linear model - Convergence diagnostics
+
+```{r}
+theme_set(brms::theme_default(base_family="serif", base_size=12))
+mcmc_rhat(rhat(linear)) + yaxis_text(hjust = 0)
+```
+
+## Linear model - Convergence diagnostics
+
+```{r}
+mcmc_neff(neff_ratio(linear)) + yaxis_text(hjust=0)
+```
+
+## Linear model - Posterior predictive checks, error histograms
+
+```{r, cache=T}
+theme_set(brms::theme_default(base_family="serif", base_size=24))
+pp_check(linear, type="error_hist", nsamples=4, binwidth=3)
+```
+
+## Linear model - Posterior predictive checks, LOO-PIT
+
+```{r, cache=T}
+pp_check(linear, type="loo_pit_overlay", nsamples = 4000)
+```
+
+## Linear model - LOO-CV
+
+```{r}
+loo(linear)
+```
+
+## GAM - Stan code
+
+\footnotesize
+
+```{c, echo=T, eval=F}
+// generated with brms 2.14.4
+functions {
+}
+data {
+  int<lower=1> N;  // total number of observations
+  vector[N] Y;  // response variable
+  // data for splines
+  int Ks;  // number of linear effects
+  matrix[N, Ks] Xs;  // design matrix for the linear effects
+  // data for spline s(AT)
+  int nb_1;  // number of bases
+  int knots_1[nb_1];  // number of knots
+  // basis function matrices
+  matrix[N, knots_1[1]] Zs_1_1;
+  // data for spline s(V)
+  int nb_2;  // number of bases
+  int knots_2[nb_2];  // number of knots
+  // basis function matrices
+  matrix[N, knots_2[1]] Zs_2_1;
+```
+
+## GAM - Stan code
+
+\footnotesize
+
+```{c, echo=T, eval=F}
+  // data for spline s(AP)
+  int nb_3;  // number of bases
+  int knots_3[nb_3];  // number of knots
+  // basis function matrices
+  matrix[N, knots_3[1]] Zs_3_1;
+  // data for spline s(RH)
+  int nb_4;  // number of bases
+  int knots_4[nb_4];  // number of knots
+  // basis function matrices
+  matrix[N, knots_4[1]] Zs_4_1;
+  int prior_only;  // should the likelihood be ignored?
+}
+transformed data {
+}
+```
+
+## GAM - Stan code
+
+\scriptsize
+
+```{c, echo=T, eval=F}
+parameters {
+  real Intercept;  // temporary intercept for centered predictors
+  vector[Ks] bs;  // spline coefficients
+  // parameters for spline s(AT)
+  // standarized spline coefficients
+  vector[knots_1[1]] zs_1_1;
+  real<lower=0> sds_1_1;  // standard deviations of spline coefficients
+  // parameters for spline s(V)
+  // standarized spline coefficients
+  vector[knots_2[1]] zs_2_1;
+  real<lower=0> sds_2_1;  // standard deviations of spline coefficients
+  // parameters for spline s(AP)
+  // standarized spline coefficients
+  vector[knots_3[1]] zs_3_1;
+  real<lower=0> sds_3_1;  // standard deviations of spline coefficients
+  // parameters for spline s(RH)
+  // standarized spline coefficients
+  vector[knots_4[1]] zs_4_1;
+  real<lower=0> sds_4_1;  // standard deviations of spline coefficients
+  real<lower=0> sigma;  // residual SD
+}
+```
+
+## GAM - Stan code
+
+\scriptsize
+
+```{c, echo=T, eval=F}
+transformed parameters {
+  // actual spline coefficients
+  vector[knots_1[1]] s_1_1;
+  // actual spline coefficients
+  vector[knots_2[1]] s_2_1;
+  // actual spline coefficients
+  vector[knots_3[1]] s_3_1;
+  // actual spline coefficients
+  vector[knots_4[1]] s_4_1;
+  // compute actual spline coefficients
+  s_1_1 = sds_1_1 * zs_1_1;
+  // compute actual spline coefficients
+  s_2_1 = sds_2_1 * zs_2_1;
+  // compute actual spline coefficients
+  s_3_1 = sds_3_1 * zs_3_1;
+  // compute actual spline coefficients
+  s_4_1 = sds_4_1 * zs_4_1;
+}
+generated quantities {
+  // actual population-level intercept
+  real b_Intercept = Intercept;
+}
+```
+
+## GAM - Stan code
+
+\scriptsize
+
+```{c, echo=T, eval=F}
+model {
+  // likelihood including all constants
+  if (!prior_only) {
+    // initialize linear predictor term
+    vector[N] mu = Intercept + rep_vector(0.0, N) +
+                   Xs * bs + Zs_1_1 * s_1_1 + Zs_2_1 * s_2_1 +
+                   Zs_3_1 * s_3_1 + Zs_4_1 * s_4_1;
+    target += normal_lpdf(Y | mu, sigma);
+  }
+  // priors including all constants
+  target += normal_lpdf(Intercept | 460, 75);
+  target += normal_lpdf(bs | 0, 100)
+    - 4 * normal_lccdf(0 | 0, 100);
+  target += exponential_lpdf(sds_1_1 | 0.1);
+  target += std_normal_lpdf(zs_1_1);
+  target += exponential_lpdf(sds_2_1 | 0.1);
+  target += std_normal_lpdf(zs_2_1);
+  target += exponential_lpdf(sds_3_1 | 0.1);
+  target += std_normal_lpdf(zs_3_1);
+  target += exponential_lpdf(sds_4_1 | 0.1);
+  target += std_normal_lpdf(zs_4_1);
+  target += exponential_lpdf(sigma | 0.05);
+}
+```
+
+## GAM - Convergence diagnostics
+
+\tiny
+
+```{r}
+summary(gam)
+```
+
+## GAM - Convergence diagnostics
+
+```{r}
+theme_set(brms::theme_default(base_family="serif", base_size=12))
+mcmc_rhat(rhat(gam)) + yaxis_text(hjust = 0)
+```
+
+## GAM - Convergence diagnostics
+
+```{r}
+mcmc_neff(neff_ratio(gam)) + yaxis_text(hjust=0)
+```
+
+## GAM - Convergence diagnostics
+
+```{r}
+mcmc_intervals(gam, pars=vars(-lp__, -b_Intercept))
+```
+
+## GAM - Posterior predictive checks, error histograms
+
+```{r, cache=T}
+theme_set(brms::theme_default(base_family="serif", base_size=24))
+pp_check(gam, type="error_hist", nsamples=4, binwidth=3)
+```
+
+## GAM - Posterior predictive checks, LOO-PIT
+
+```{r, cache=T}
+pp_check(gam, type="loo_pit_overlay", nsamples = 4000)
+```
+
+## GAM - LOO-CV
+
+```{r}
+loo(gam)
+```
